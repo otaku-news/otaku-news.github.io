@@ -5,6 +5,7 @@
 <link rel="preconnect" href="https://graphql.anilist.co" crossorigin>
 <link rel="preconnect" href="https://s4.anilist.co" crossorigin>
 <link rel="dns-prefetch" href="https://i.ytimg.com">
+<link rel="preconnect" href="https://us-central1-otaku-news-1062.cloudfunctions.net" crossorigin>
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Loading… — Otaku News</title>
@@ -118,6 +119,31 @@
   .detail-error { text-align: center; padding: 80px 20px; color: var(--ink-faint); font-family: var(--mono); }
   .detail-skel { height: 420px; margin: 16px; }
 
+  /* ---------- Verified Where to Watch ---------- */
+  .watch-row { display:flex; flex-wrap:wrap; gap:10px; }
+  .watch-btn {
+    display:inline-flex; align-items:center; justify-content:center; min-height:46px;
+    padding:0 18px; border-radius:12px; color:#fff; font-weight:800; font-size:14px;
+    background:var(--brand, var(--accent)); box-shadow:0 8px 20px color-mix(in srgb, var(--brand, var(--accent)) 25%, transparent);
+    transition:transform .16s ease, filter .16s ease;
+  }
+  .watch-btn:hover { transform:translateY(-2px); filter:brightness(1.07); }
+  .watch-btn.watch-extra::after { content:"VERIFIED"; font-family:var(--mono); font-size:8px; letter-spacing:.8px; margin-left:8px; opacity:.72; }
+  .watch-finder { margin-top:12px; max-width:720px; }
+  .watch-finder-controls { display:flex; flex-wrap:wrap; gap:9px; align-items:center; }
+  .watch-country {
+    min-height:42px; padding:0 11px; border:1px solid var(--line); border-radius:9px;
+    background:var(--card); color:var(--ink); font:600 12px var(--mono);
+  }
+  .watch-find-btn {
+    min-height:42px; border:0; border-radius:9px; padding:0 15px; cursor:pointer;
+    background:var(--accent); color:#fff; font-weight:800; font-size:12px;
+  }
+  .watch-find-btn[disabled] { opacity:.65; cursor:wait; }
+  .watch-finder-status { min-height:18px; margin:8px 0 0; font:11px/1.4 var(--mono); color:var(--ink-faint); }
+  .watch-finder-status.ok { color:#27b36a; }
+  .watch-finder-status.warn { color:#d78a19; }
+
   @media (max-width: 560px) {
     .cr-cta-row .cr-cta, .cr-hero .wl-btn { padding: 9px 15px; }
     .cr-details { grid-template-columns: repeat(2, 1fr); }
@@ -178,6 +204,114 @@
     const nextIdx = (themes.indexOf(current) + 1) % themes.length;
     applyTheme(themes[nextIdx]);
   });
+
+  // ---------- Verified Where to Watch finder ----------
+  // Existing AniList buttons are NEVER removed. This finder only appends new
+  // providers returned by the server-side TMDB watch-provider lookup.
+  const WATCH_FINDER_ENDPOINT = window.OTAKU_WATCH_FINDER_URL ||
+    'https://us-central1-otaku-news-1062.cloudfunctions.net/watchProviders';
+
+  const WATCH_COUNTRIES = [
+    ['IN', 'India'], ['US', 'United States'], ['GB', 'United Kingdom'],
+    ['JP', 'Japan'], ['CA', 'Canada'], ['AU', 'Australia'], ['DE', 'Germany'],
+    ['FR', 'France'], ['BR', 'Brazil'], ['MX', 'Mexico'], ['PH', 'Philippines'],
+    ['ID', 'Indonesia'], ['MY', 'Malaysia'], ['SG', 'Singapore'], ['KR', 'South Korea']
+  ];
+
+  const PROVIDER_COLORS = {
+    'netflix':'#e50914', 'crunchyroll':'#f47521', 'prime video':'#00a8e1',
+    'amazon prime video':'#00a8e1', 'disney plus':'#113ccf', 'disney+':'#113ccf',
+    'youtube':'#ff0000', 'bilibili':'#00aeec', 'bilibili tv':'#00aeec',
+    'iqiyi':'#19c955', 'hulu':'#1ce783', 'hidive':'#5d5fef', 'max':'#5b2cff',
+    'apple tv':'#222', 'apple tv+':'#222', 'tubi':'#5a22d6', 'pluto tv':'#ff3b30',
+    'amazon minitv':'#ff9900'
+  };
+
+  const providerKey = name => String(name || '').toLowerCase()
+    .replace(/\+/g, ' plus ').replace(/[^a-z0-9]+/g, ' ').trim()
+    .replace(/\bamazon\s+prime\s+video\b/, 'prime video')
+    .replace(/\bdisney\s+plus\b/, 'disney plus');
+
+  function guessCountry() {
+    try {
+      const region = (navigator.language || '').split('-')[1];
+      if (region && WATCH_COUNTRIES.some(x => x[0] === region.toUpperCase())) return region.toUpperCase();
+    } catch (e) {}
+    try {
+      const saved = localStorage.getItem('otaku-watch-country');
+      if (saved && WATCH_COUNTRIES.some(x => x[0] === saved)) return saved;
+    } catch (e) {}
+    return 'IN';
+  }
+
+  function initWatchFinder(media, existingStreams) {
+    const row = document.getElementById('watch-row');
+    const country = document.getElementById('watch-country');
+    const button = document.getElementById('watch-find-btn');
+    const status = document.getElementById('watch-finder-status');
+    if (!row || !country || !button || !status) return;
+
+    const selected = guessCountry();
+    country.innerHTML = WATCH_COUNTRIES.map(([code, name]) =>
+      `<option value="${code}"${code === selected ? ' selected' : ''}>${name}</option>`).join('');
+
+    country.addEventListener('change', () => {
+      try { localStorage.setItem('otaku-watch-country', country.value); } catch (e) {}
+      status.className = 'watch-finder-status';
+      status.textContent = 'Choose Find more legal options to check this country.';
+    });
+
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      button.textContent = 'Checking verified services…';
+      status.className = 'watch-finder-status';
+      status.textContent = 'Looking for additional legal streaming, free, ad-supported, rent and buy options…';
+      try {
+        const r = await fetch(WATCH_FINDER_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: media.title.english || media.title.romaji,
+            titles: [media.title.english, media.title.romaji, media.title.native].filter(Boolean),
+            year: media.startDate && media.startDate.year,
+            country: country.value
+          })
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+
+        const seen = new Set([...row.querySelectorAll('[data-provider]')].map(el => providerKey(el.dataset.provider)));
+        let added = 0;
+        (data.providers || []).forEach(p => {
+          const key = providerKey(p.name);
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          const a = document.createElement('a');
+          a.className = 'watch-btn watch-extra';
+          a.dataset.provider = p.name;
+          // The server returns a verified provider/availability URL. No scraped or pirate links.
+          a.href = p.url || data.link || '#';
+          a.target = '_blank';
+          a.rel = 'noopener';
+          a.style.setProperty('--brand', PROVIDER_COLORS[key] || '#536dfe');
+          const label = p.name + (p.type === 'free' ? ' · FREE' : p.type === 'ads' ? ' · ADS' : p.type === 'rent' ? ' · RENT' : p.type === 'buy' ? ' · BUY' : '');
+          a.textContent = label + ' ↗';
+          row.appendChild(a);
+          added++;
+        });
+        status.className = 'watch-finder-status ' + (added ? 'ok' : 'warn');
+        status.textContent = added
+          ? `Added ${added} new verified legal option${added === 1 ? '' : 's'} for ${country.options[country.selectedIndex].text}. Existing options were kept.`
+          : `No additional verified providers were found for ${country.options[country.selectedIndex].text}. Your existing options were kept.`;
+      } catch (e) {
+        status.className = 'watch-finder-status warn';
+        status.textContent = 'Could not check extra providers right now. Your existing Where to Watch options are unchanged.';
+      } finally {
+        button.disabled = false;
+        button.textContent = '＋ Find more legal options';
+      }
+    });
+  }
 
   // ---------- Fetch & render anime details ----------
   const box = document.getElementById('detail-content');
@@ -256,9 +390,16 @@
         seenSites.add(l.site);
         return true;
       }).sort((x, y) => (OTT_RANK[x.site] || 99) - (OTT_RANK[y.site] || 99)).slice(0, 6);
-      const watch = streams.length ? `<div class="detail-section-label">視聴 — Where to Watch</div>
-        <div class="watch-row">${streams.map(l =>
-          `<a class="watch-btn" href="${l.url}" target="_blank" rel="noopener" style="--brand:${l.color || 'var(--accent)'}">${l.site} ↗</a>`).join('')}</div>` : '';
+      const watch = `<div class="detail-section-label">視聴 — Where to Watch</div>
+        <div class="watch-row" id="watch-row">${streams.map(l =>
+          `<a class="watch-btn" data-provider="${esc(l.site)}" href="${l.url}" target="_blank" rel="noopener" style="--brand:${l.color || 'var(--accent)'}">${esc(l.site)} ↗</a>`).join('')}</div>
+        <div class="watch-finder" id="watch-finder">
+          <div class="watch-finder-controls">
+            <select class="watch-country" id="watch-country" aria-label="Country for streaming availability"></select>
+            <button class="watch-find-btn" id="watch-find-btn" type="button">＋ Find more legal options</button>
+          </div>
+          <div class="watch-finder-status" id="watch-finder-status">Keeps the options above. Only adds newly verified legal services.</div>
+        </div>`;
       const trailer = m.trailer && m.trailer.site === 'youtube'
         ? `<a class="trailer-thumb" href="https://www.youtube.com/watch?v=${m.trailer.id}" target="_blank" rel="noopener">
              <img src="https://i.ytimg.com/vi/${m.trailer.id}/hqdefault.jpg" alt="Watch trailer on YouTube" loading="lazy">
@@ -344,6 +485,7 @@
           ${window.otakuComments ? window.otakuComments(id, title) : ''}
         </div>`;
       if (window.otakuCommentsRefresh) window.otakuCommentsRefresh(id);
+      initWatchFinder(m, streams);
       expandFranchise(m);
     })
     .catch(() => fail("Couldn't load this anime. The AniList API may be busy — try refreshing."));
